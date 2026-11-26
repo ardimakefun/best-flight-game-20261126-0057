@@ -1,319 +1,164 @@
-// Flight physics: takeoff roll, smooth aerodynamics, canyon collision, ring gates, and runway landing.
+import * as THREE from 'three';
+import { AIRCRAFT_DIMENSIONS } from './aircraft.js';
+import { DEST_RUNWAY_X, WORLD_BOUNDS, getArchDistanceInfo, getTerrainHeight, getThermalLiftAt } from './world.js';
 
-import { BONUS_GATE, FLIGHT, MISSIONS, WORLD_BOUNDS } from './config.js';
-import { buildBasis, clamp, lerp } from './math3d.js';
-import { canyonCenterX, canyonFloorHalfW, classifySurface, terrainHeight } from './terrain.js';
-import { SCREEN_CRASH, SCREEN_FAIL, SCREEN_PLAY, SCREEN_WIN } from './world.js';
+export const FLIGHT_CONFIG = Object.freeze({
+  gravity: 9.81, maxThrustAccel: 29.5, stallSpeedMs: 24.5, flapsStallSpeedMs: 19.5,
+  cruiseSpeedMs: 72.0, maxSpeedMs: 105.0, pitchRateRad: 1.05, rollRateRad: 1.72, yawRateRad: 0.62, fuelBurnBase: 0.26, fuelBurnMax: 0.90,
+});
 
-export function stepPhysics(world, controls, dt) {
-  const s = world.state;
-  const p = s.plane;
-  const mission = MISSIONS[s.missionIndex];
+/** Create initial flight physics state positioned at departure airfield threshold. */
+export function createFlightState(sortieConfig) {
+  return {
+    pos: new THREE.Vector3(0, WORLD_BOUNDS.startRunwayElevation + AIRCRAFT_DIMENSIONS.gearHeight, WORLD_BOUNDS.startRunwayZ + 148),
+    vel: new THREE.Vector3(), quat: new THREE.Quaternion(),
+    headingDeg: 0, pitchDeg: 0, rollDeg: 0, airspeedKt: 0, groundSpeedKt: 0,
+    altitudeFt: Math.round(WORLD_BOUNDS.startRunwayElevation * 3.28084), altitudeAglFt: 0, vsiFpm: 0, aoaDeg: 0,
+    throttle: 0.84, rpm: 0.25, fuel: sortieConfig.initialFuel, hull: 100, engineTemp: 62, gLoad: 1.0,
+    windSpeedKt: sortieConfig.windSpeedKt, windDirRad: sortieConfig.windDirRad,
+    flapsDeployed: false, autoLevel: false, brakesActive: false, inThermal: false,
+    approachActive: false, supplyModeActive: false, isStorm: false, locDev: 0, gsDev: 0,
+    stallWarning: false, terrainWarning: false, overheatWarning: false, lowFuelWarning: false,
+    airborne: false, onRunway: true, onDestRunway: false,
+    touchdownVsiFpm: 0, touchdownAlignmentM: 0, touchdownSignedOffsetM: 0, touchdownThresholdM: 0, touchdownQuality: '',
+    crashed: false, crashReason: '', landedComplete: false, controls: { pitch: 0, roll: 0, yaw: 0 },
+    events: { touchdownThisStep: false, crashedThisStep: false, hullDamagedThisStep: false },
+  };
+}
 
-  world.clearEvents();
-  world.stepAmbient(dt);
+const tmpFwd = new THREE.Vector3(); const tmpUp = new THREE.Vector3();
+const tmpAirVel = new THREE.Vector3(); const tmpWind = new THREE.Vector3();
+const tmpDQ = new THREE.Quaternion(); const tmpEul = new THREE.Euler(0, 0, 0, 'YXZ');
 
-  if (s.screen === SCREEN_CRASH) {
-    s.crashTimer -= dt;
-    if (s.crashTimer <= 0) {
-      if (p.hull <= 0) {
-        s.screen = SCREEN_FAIL;
-        s.events.fail = true;
-      } else {
-        world.respawnAtCheckpoint();
-      }
-    }
-    return;
-  }
+/** Advance 6-DOF flight aerodynamics, crosswind drift, ILS guidance, thermals & runway collisions. */
+export function stepFlightAerodynamics(state, input, sortieConfig, gatesCleared, totalGates, dt, readyForRecovery = true) {
+  state.events.touchdownThisStep = false; state.events.crashedThisStep = false; state.events.hullDamagedThisStep = false;
+  if (state.crashed || state.landedComplete) return;
 
-  if (s.screen !== SCREEN_PLAY) return;
+  const thrDelta = (input.throttleUp ? 1 : 0) - (input.throttleDown ? 1 : 0);
+  if (thrDelta !== 0) state.throttle = THREE.MathUtils.clamp(state.throttle + thrDelta * 0.45 * dt, 0, 1);
+  if (input.wheelDelta !== 0) state.throttle = THREE.MathUtils.clamp(state.throttle - input.wheelDelta * 0.0005, 0, 1);
 
-  s.flightTime += dt;
+  state.rpm = THREE.MathUtils.lerp(state.rpm, state.fuel > 0 ? 0.14 + state.throttle * 0.86 : 0.04, Math.min(1, dt * 3.8));
+  if (state.fuel > 0) state.fuel = Math.max(0, state.fuel - (FLIGHT_CONFIG.fuelBurnBase + Math.pow(state.throttle, 1.45) * FLIGHT_CONFIG.fuelBurnMax) * dt);
+  state.lowFuelWarning = state.fuel < 18;
+  state.engineTemp = THREE.MathUtils.lerp(state.engineTemp, 54 + state.throttle * 52 + (state.throttle > 0.9 ? 14 : 0), Math.min(1, dt * 0.55));
+  state.overheatWarning = state.engineTemp > 103;
 
-  const pitchDir = s.invertPitch ? -controls.pitch : controls.pitch;
-  p.throttle = clamp(p.throttle + controls.throttle * dt * 0.55, 0, 1);
-  p.aileronInput = lerp(p.aileronInput, controls.roll, 10 * dt);
-  p.elevatorInput = lerp(p.elevatorInput, pitchDir, 10 * dt);
+  const rawPitch = (input.pitchUp ? 1 : 0) - (input.pitchDown ? 1 : 0) + (input.analogPitch || 0);
+  const autoPitch = state.autoLevel && Math.abs(rawPitch) < 0.05 && state.airborne ? THREE.MathUtils.clamp(-state.pitchDeg * 0.08, -0.35, 0.35) : 0;
+  const targetPitch = THREE.MathUtils.clamp((input.invertPitch ? -rawPitch : rawPitch) + autoPitch, -1, 1);
+  const rawRoll = (input.rollLeft ? 1 : 0) - (input.rollRight ? 1 : 0) + (input.analogRoll || 0);
+  const autoRoll = state.autoLevel && Math.abs(rawRoll) < 0.05 && state.airborne ? THREE.MathUtils.clamp(-state.rollDeg * 0.06, -0.45, 0.45) : 0;
+  const targetRoll = THREE.MathUtils.clamp(rawRoll + autoRoll, -1, 1);
+  const targetYaw = (input.yawLeft ? 1 : 0) - (input.yawRight ? 1 : 0);
 
-  const effectiveThrottle = p.fuel > 0 ? p.throttle : 0;
-  const burn = lerp(FLIGHT.fuelBurnIdle, FLIGHT.fuelBurnFull, effectiveThrottle * effectiveThrottle);
-  p.fuel = Math.max(0, p.fuel - burn * dt);
+  state.controls.pitch = THREE.MathUtils.lerp(state.controls.pitch, targetPitch, Math.min(1, dt * 9));
+  state.controls.roll = THREE.MathUtils.lerp(state.controls.roll, targetRoll, Math.min(1, dt * 9));
+  state.controls.yaw = THREE.MathUtils.lerp(state.controls.yaw, targetYaw, Math.min(1, dt * 8));
 
-  const targetTemp = 38 + effectiveThrottle * 54 + (effectiveThrottle > 0.9 ? 22 : 0);
-  p.engineTemp = lerp(p.engineTemp, targetTemp, dt * 0.65);
-  const heatScale = p.engineTemp > 102 ? 0.84 : 1.0;
+  const cosRoll = Math.max(0.4, Math.cos(THREE.MathUtils.degToRad(state.rollDeg)));
+  state.gLoad = THREE.MathUtils.lerp(state.gLoad, state.airborne ? THREE.MathUtils.clamp(1 / cosRoll + state.controls.pitch * 0.45, 0.4, 3.2) : 1.0, Math.min(1, dt * 5));
 
-  if (p.onGround) {
-    const groundY = terrainHeight(p.pos.x, p.pos.z);
-    const surf = classifySurface(p.pos.x, p.pos.z, groundY);
-    const onRunway = surf === 'airstrip' || surf === 'runway';
+  const windMs = state.windSpeedKt * 0.51444; tmpWind.set(Math.sin(state.windDirRad) * windMs, 0, Math.cos(state.windDirRad) * windMs);
+  const speedMs = state.vel.length(); tmpAirVel.copy(state.vel).sub(tmpWind); const airspeedMs = tmpAirVel.length();
+  state.airspeedKt = airspeedMs * 1.94384; state.groundSpeedKt = speedMs * 1.94384;
+  tmpEul.setFromQuaternion(state.quat, 'YXZ');
+  state.pitchDeg = THREE.MathUtils.radToDeg(tmpEul.x); state.rollDeg = THREE.MathUtils.radToDeg(tmpEul.z);
+  state.headingDeg = (THREE.MathUtils.radToDeg(-tmpEul.y) % 360 + 360) % 360;
 
-    // Ground steering
-    p.yaw += controls.roll * 0.52 * dt;
-    p.roll = lerp(p.roll, 0, 10 * dt);
+  const airAuth = state.airborne ? THREE.MathUtils.clamp(0.45 + airspeedMs / 56, 0.45, 1.15) : THREE.MathUtils.clamp(speedMs / 30, 0.12, 0.9);
+  const dPitch = state.controls.pitch * FLIGHT_CONFIG.pitchRateRad * airAuth * dt;
+  const dRoll = (state.controls.roll * FLIGHT_CONFIG.rollRateRad * airAuth + (Math.abs(targetRoll) < 0.05 && state.airborne ? -tmpEul.z * 0.35 : 0)) * dt;
+  const dYaw = state.controls.yaw * FLIGHT_CONFIG.yawRateRad * Math.max(0.45, airAuth) * dt;
 
-    const thrustAcc = effectiveThrottle * heatScale * FLIGHT.maxThrust;
-    const rollDrag = onRunway ? 0.14 : 0.45;
-    const brake = controls.throttle < 0 || s.clearedToLand ? 16.0 * (1 - effectiveThrottle * 0.85) : 0;
-
-    p.speed = clamp(p.speed + (thrustAcc - p.speed * rollDrag - brake) * dt, 0, FLIGHT.maxSpeed);
-
-    if (p.speed > 18 && pitchDir > 0) {
-      p.pitch = clamp(p.pitch + pitchDir * 0.85 * dt, -0.04, 0.34);
-    } else {
-      p.pitch = lerp(p.pitch, 0.03, 6 * dt);
-    }
-
-    p.vel.x = Math.sin(p.yaw) * p.speed;
-    p.vel.z = Math.cos(p.yaw) * p.speed;
-    p.vel.y = 0;
-
-    p.pos.x += p.vel.x * dt;
-    p.pos.z += p.vel.z * dt;
-    p.pos.y = terrainHeight(p.pos.x, p.pos.z) + 2.4;
-    p.vsi = 0;
-
-    if (p.speed > 14 && Math.random() < 0.45) {
-      world.spawnBurst(p.pos.x, p.pos.y - 2.1, p.pos.z - 1.5, '#d89b6a', 1, 5);
-    }
-
-    // Smooth liftoff once rolling above rotation speed
-    if (p.speed >= FLIGHT.takeoffSpeed && p.pitch > 0.08 && !s.clearedToLand) {
-      p.onGround = false;
-      p.pos.y += 1.4;
-      p.vel.y = Math.max(8.5, Math.sin(p.pitch) * p.speed * 0.9);
-      world.showBanner('AIRBORNE! FLY THROUGH THE GLOWING RINGS IN ORDER', '#5cf29c', 2.8);
-    }
-
-    if (s.clearedToLand && surf === 'runway' && p.speed < 10.5) {
-      finishMission(world);
-    }
+  if (state.airborne) {
+    tmpDQ.setFromEuler(new THREE.Euler(dPitch, dYaw, dRoll, 'YXZ')); state.quat.multiply(tmpDQ).normalize();
+    const bankYaw = Math.sin(tmpEul.z) * 0.46 * THREE.MathUtils.clamp(airspeedMs / 50, 0.25, 1.1) * dt;
+    if (Math.abs(bankYaw) > 1e-6) { tmpDQ.setFromAxisAngle(new THREE.Vector3(0, 1, 0), bankYaw); state.quat.premultiply(tmpDQ).normalize(); }
   } else {
-    // Smooth airborne dynamics: responsive pitch/roll + realistic airspeed & turn bleed
-    p.pitch += pitchDir * FLIGHT.pitchRate * dt;
-    if (Math.abs(pitchDir) < 0.05) p.pitch -= p.pitch * FLIGHT.pitchReturn * dt;
-    p.pitch = clamp(p.pitch, -0.88, 0.88);
-
-    p.roll += controls.roll * FLIGHT.rollRate * dt;
-    if (Math.abs(controls.roll) < 0.05) p.roll -= p.roll * FLIGHT.rollReturn * dt;
-    p.roll = clamp(p.roll, -1.25, 1.25);
-
-    p.yaw += Math.sin(p.roll) * FLIGHT.turnRate * dt;
-
-    const basis = buildBasis(p.yaw, p.pitch, p.roll);
-
-    // Thrust vs quadratic drag + climb/dive energy exchange + gentle stall sink
-    const thrust = effectiveThrottle * heatScale * FLIGHT.maxThrust;
-    const drag = FLIGHT.dragCoeff * p.speed * p.speed + Math.abs(p.roll) * 2.5;
-    const climbLoad = Math.sin(p.pitch) * FLIGHT.gravity * 0.9;
-    p.speed = clamp(p.speed + (thrust - drag - climbLoad) * dt, 16, FLIGHT.maxSpeed);
-
-    // Bank lift loss & low-speed stall sink
-    const stallSink = p.speed < FLIGHT.stallSpeed ? ((FLIGHT.stallSpeed - p.speed) / FLIGHT.stallSpeed) * FLIGHT.gravity * 1.15 : 0;
-    const bankSink = (1 - Math.cos(p.roll)) * 5.5;
-    const targetVx = basis.fwd.x * p.speed + (mission.crosswind > 0 ? Math.sin(p.pos.z * 0.002) * mission.crosswind : 0);
-    const targetVy = basis.fwd.y * p.speed - stallSink - bankSink;
-    const targetVz = basis.fwd.z * p.speed;
-
-    const lag = clamp(5.5 * dt, 0, 1);
-    p.vel.x = lerp(p.vel.x, targetVx, lag);
-    p.vel.y = lerp(p.vel.y, targetVy, lag);
-    p.vel.z = lerp(p.vel.z, targetVz, lag);
-    p.vsi = p.vel.y * 196.85;
-
-    p.pos.x += p.vel.x * dt;
-    p.pos.y += p.vel.y * dt;
-    p.pos.z += p.vel.z * dt;
-
-    if (p.pos.y > FLIGHT.ceilingAlt) {
-      p.pos.y = FLIGHT.ceilingAlt;
-      p.vel.y = Math.min(p.vel.y, -1.5);
-      p.pitch = Math.min(p.pitch, 0);
-    }
-
-    if ((Math.abs(p.roll) > 0.35 || p.speed > 76) && Math.random() < 0.7) {
-      s.trails.push({
-        x: p.pos.x - basis.right.x * 14,
-        y: p.pos.y - basis.right.y * 14 + basis.up.y * 1.3,
-        z: p.pos.z - basis.right.z * 14,
-        life: 0.55,
-        maxLife: 0.55,
-      });
-      s.trails.push({
-        x: p.pos.x + basis.right.x * 14,
-        y: p.pos.y + basis.right.y * 14 + basis.up.y * 1.3,
-        z: p.pos.z + basis.right.z * 14,
-        life: 0.55,
-        maxLife: 0.55,
-      });
-    }
-
-    if (p.hull < 65 && Math.random() < 0.35) {
-      world.spawnBurst(p.pos.x, p.pos.y, p.pos.z, '#52494e', 1, 7);
-    }
+    tmpDQ.setFromEuler(new THREE.Euler(speedMs > 24 && state.controls.pitch > 0 ? dPitch * 0.85 : 0, state.controls.yaw * 0.65 * Math.min(1, speedMs / 18) * dt, 0, 'YXZ'));
+    state.quat.multiply(tmpDQ).normalize(); tmpEul.setFromQuaternion(state.quat, 'YXZ');
+    tmpEul.z = THREE.MathUtils.lerp(tmpEul.z, 0, Math.min(1, dt * 8)); tmpEul.x = THREE.MathUtils.clamp(tmpEul.x, -0.05, 0.28); state.quat.setFromEuler(tmpEul);
   }
 
-  p.propAngle += (14 + p.throttle * 34) * dt;
+  tmpFwd.set(0, 0, -1).applyQuaternion(state.quat).normalize(); tmpUp.set(0, 1, 0).applyQuaternion(state.quat).normalize();
+  const aoaRad = airspeedMs > 5 ? Math.atan2(-tmpAirVel.dot(tmpUp), Math.max(4, Math.max(0, tmpAirVel.dot(tmpFwd)))) : 0;
+  state.aoaDeg = THREE.MathUtils.radToDeg(aoaRad);
+  const activeStallMs = state.flapsDeployed ? FLIGHT_CONFIG.flapsStallSpeedMs : FLIGHT_CONFIG.stallSpeedMs;
+  state.stallWarning = state.airborne && (airspeedMs < activeStallMs || Math.abs(state.aoaDeg) > 19);
 
-  checkRings(world, mission);
-  checkTerrainAndLanding(world);
-}
+  const thrustAccel = state.fuel > 0 ? state.rpm * FLIGHT_CONFIG.maxThrustAccel * (state.engineTemp > 106 ? 0.82 : 1.0) : 0;
+  const refSpeedMs = state.flapsDeployed ? 28.5 : 33.5;
+  const groundEffect = state.altitudeAglFt < 20 ? 1.0 + 0.18 * (1 - state.altitudeAglFt / 20) : 1.0;
+  const liftAccel = FLIGHT_CONFIG.gravity * Math.min(2.1, THREE.MathUtils.clamp((airspeedMs / refSpeedMs) * (airspeedMs / refSpeedMs) * groundEffect, 0, 2.4) * (1.0 + THREE.MathUtils.clamp(aoaRad * 2.1, -0.5, 0.95)) * (state.stallWarning ? 0.54 : 1.0));
+  const thermalLift = state.airborne ? getThermalLiftAt(state.pos) : 0;
+  state.inThermal = thermalLift > 0.2; state.brakesActive = Boolean(input.brake);
 
-function checkRings(world, mission) {
-  const s = world.state;
-  const p = s.plane;
-
-  for (let i = 0; i < s.rings.length; i += 1) {
-    const r = s.rings[i];
-    if (r.passed || r.missed) continue;
-
-    const dz = p.pos.z - r.z;
-    if (dz < -8) break;
-
-    const dx = p.pos.x - r.x;
-    const dy = p.pos.y - r.y;
-    const radial = Math.hypot(dx, dy);
-
-    if (Math.abs(dz) <= 12 && radial <= r.radius + 5) {
-      r.passed = true;
-      r.flash = 1.0;
-      s.ringsPassed += 1;
-      s.lastCheckpointIndex = i;
-      s.streak += 1;
-      if (s.streak > s.maxStreak) s.maxStreak = s.streak;
-
-      const bullseye = radial <= r.radius * 0.5;
-      const bonusMult = r.isBonus ? BONUS_GATE.scoreMult : 1;
-      const pts = Math.round((bullseye ? 1400 : 1000) * (1 + (s.streak - 1) * 0.15) * mission.scoreMult * bonusMult);
-      s.score += pts;
-      if (s.score > s.bestScore) s.bestScore = s.score;
-
-      if (bullseye) {
-        p.fuel = Math.min(100, p.fuel + 2.5);
-        s.events.ringBullseye = true;
-        const label = r.isBonus ? `BONUS GATE BULLSEYE! +${pts}  (3x PTS` : `BULLSEYE GATE ${i + 1}! +${pts}  (`;
-        world.showBanner(`${label}STREAK x${s.streak} • +2.5% FUEL)`, r.isBonus ? '#ffd700' : '#5cf29c', 2.2);
-        world.spawnBurst(r.x, r.y, r.z, r.isBonus ? '#ffd700' : '#5cf29c', 28, 36);
-      } else {
-        s.events.ringHit = true;
-        const label = r.isBonus ? `BONUS GATE CLEARED! +${pts}  (3x PTS • ` : `GATE ${i + 1} CLEARED! +${pts}  (`;
-        world.showBanner(`${label}STREAK x${s.streak})`, r.isBonus ? '#ffd700' : '#ffbe4d', 1.8);
-        world.spawnBurst(r.x, r.y, r.z, r.isBonus ? '#ffd700' : '#ffd15c', 20, 28);
-      }
-
-      if (s.ringsPassed + s.ringsMissed >= WORLD_BOUNDS.ringCount) {
-        s.clearedToLand = true;
-        world.showBanner('ALL GATES COMPLETE! ALIGN WITH DESERT RUNWAY AHEAD & THROTTLE DOWN (Q)', '#5cf29c', 4.5);
-      }
-    } else if (dz > 14) {
-      r.missed = true;
-      s.ringsMissed += 1;
-      s.streak = 0;
-      s.score = Math.max(0, s.score - 350);
-      s.flightTime += 5.0;
-      s.alertFlash = 0.85;
-      s.events.ringMiss = true;
-      const missName = r.isBonus ? 'BONUS GATE' : `GATE ${i + 1}`;
-      world.showBanner(`${missName} MISSED! -350 PTS  |  +5.0s PENALTY`, '#ff5c4d', 2.4);
-
-      if (s.ringsPassed + s.ringsMissed >= WORLD_BOUNDS.ringCount) {
-        s.clearedToLand = true;
-        world.showBanner('FINAL APPROACH! ALIGN WITH RUNWAY AHEAD & THROTTLE DOWN (Q)', '#ffbe4d', 4.0);
-      }
-    }
-    break;
-  }
-}
-
-function checkTerrainAndLanding(world) {
-  const s = world.state;
-  const p = s.plane;
-  const groundY = terrainHeight(p.pos.x, p.pos.z);
-
-  if (p.onGround) {
-    const surf = classifySurface(p.pos.x, p.pos.z, groundY);
-    if (surf === 'river' || (surf !== 'airstrip' && surf !== 'runway' && p.speed > 26)) {
-      triggerCrash(world, 'RUNWAY EXCURSION!');
-    }
-    if (s.clearedToLand && p.pos.z > WORLD_BOUNDS.runwayZEnd + 30) {
-      finishMission(world);
-    }
-    return;
+  if (state.airborne) {
+    if (airspeedMs < activeStallMs - 2) { tmpDQ.setFromEuler(new THREE.Euler(-0.32 * dt, 0, 0, 'YXZ')); state.quat.multiply(tmpDQ).normalize(); }
+    const dragCoeff = 0.0044 + (state.flapsDeployed ? 0.0056 : 0) + (state.brakesActive ? 0.011 : 0) + Math.abs(aoaRad) * 0.012 + (state.onDestRunway ? 0.008 : 0);
+    const accelVec = new THREE.Vector3().addScaledVector(tmpFwd, thrustAccel).addScaledVector(tmpUp, liftAccel).addScaledVector(tmpAirVel.clone().normalize(), -dragCoeff * airspeedMs * airspeedMs);
+    accelVec.y += thermalLift - FLIGHT_CONFIG.gravity; state.vel.addScaledVector(accelVec, dt);
+    const desiredGroundVel = tmpFwd.clone().multiplyScalar(THREE.MathUtils.clamp(state.vel.length(), 14, FLIGHT_CONFIG.maxSpeedMs)).addScaledVector(tmpWind, 0.55);
+    const vertAuth = state.stallWarning ? 0.16 : THREE.MathUtils.clamp((airspeedMs - 17) / 22, 0.35, 1.0);
+    state.vel.x = THREE.MathUtils.lerp(state.vel.x, desiredGroundVel.x, Math.min(1, dt * 2.55));
+    state.vel.z = THREE.MathUtils.lerp(state.vel.z, desiredGroundVel.z, Math.min(1, dt * 2.55));
+    state.vel.y = THREE.MathUtils.clamp(THREE.MathUtils.lerp(state.vel.y, desiredGroundVel.y, Math.min(1, dt * 1.45 * vertAuth)), -48, 42);
+  } else {
+    const braking = state.onDestRunway || state.brakesActive || (input.throttleDown && state.throttle < 0.15);
+    const newSpeed = Math.max(0, speedMs + (thrustAccel - (braking ? (state.brakesActive ? 14.5 : 9.8) : 1.2) - 0.003 * speedMs * speedMs) * dt);
+    state.vel.copy(tmpFwd).multiplyScalar(newSpeed); state.vel.y = 0;
+    if (!state.onDestRunway && (newSpeed > 34 || (newSpeed > 27 && state.controls.pitch > 0.15))) { state.airborne = true; state.onRunway = false; state.vel.y = Math.max(3.6, newSpeed * 0.11); }
   }
 
-  if (p.pos.y <= groundY + 2.4) {
-    if (p.vel.y > 1.2) return;
-    const surf = classifySurface(p.pos.x, p.pos.z, groundY);
-    const nearRunway = surf === 'runway' || surf === 'airstrip';
+  state.pos.addScaledVector(state.vel, dt); state.pos.x = THREE.MathUtils.clamp(state.pos.x, -1250, 1250); state.pos.y = THREE.MathUtils.clamp(state.pos.y, -5, 680);
+  const terrainY = getTerrainHeight(state.pos.x, state.pos.z); const surfaceY = Math.max(0, terrainY);
+  const onStartDeck = Math.abs(state.pos.x) < 18 && state.pos.z <= WORLD_BOUNDS.startRunwayZ + 196 && state.pos.z >= WORLD_BOUNDS.startRunwayZ - 196;
+  const onDestDeck = Math.abs(state.pos.x - DEST_RUNWAY_X) < 19.5 && state.pos.z <= WORLD_BOUNDS.destRunwayZ + 225 && state.pos.z >= WORLD_BOUNDS.destRunwayZ - 225;
+  const deckY = onStartDeck ? WORLD_BOUNDS.startRunwayElevation : onDestDeck ? WORLD_BOUNDS.destRunwayElevation : surfaceY;
 
-    if (nearRunway && p.vel.y > -16 && Math.abs(p.roll) < 0.45 && p.pitch > -0.3) {
-      p.onGround = true;
-      p.pos.y = groundY + 2.4;
-      s.touchdownFpm = Math.round(Math.abs(p.vel.y) * 196.85);
-      p.vel.y = 0;
-      p.roll = 0;
-      p.pitch = 0.02;
-      s.events.touchdown = true;
-      world.spawnBurst(p.pos.x, groundY + 1, p.pos.z, '#e8b888', 14, 14);
+  state.altitudeFt = Math.max(0, state.pos.y * 3.28084); state.altitudeAglFt = Math.max(0, (state.pos.y - deckY) * 3.28084);
+  state.vsiFpm = state.vel.y * 196.85;
+  state.terrainWarning = Boolean(state.airborne && !onDestDeck && !onStartDeck && state.altitudeAglFt < 65 && state.vsiFpm < -780);
+  state.supplyModeActive = Boolean(sortieConfig.supplyDropMode); state.isStorm = Boolean(sortieConfig.stormMode);
 
-      if (surf === 'runway' && s.clearedToLand) {
-        const gentle = s.touchdownFpm < 500;
-        s.landingGrade = gentle ? 'GREASED TOUCHDOWN' : s.touchdownFpm < 1000 ? 'FIRM TOUCHDOWN' : 'HARD TOUCHDOWN';
-        if (!gentle && s.touchdownFpm >= 1000) p.hull = Math.max(15, p.hull - 15);
-        world.showBanner(`${s.landingGrade} (${s.touchdownFpm} FPM) — BRAKE TO STOP (Q)`, '#5cf29c', 3.5);
-      } else if (surf === 'runway' && !s.clearedToLand) {
-        world.showBanner('LANDED EARLY — CLEAR REMAINING GATES OR RESTART (R)', '#ffbe4d', 3.0);
-      }
+  const rwyDistZ = Math.max(25, state.pos.z - (WORLD_BOUNDS.destRunwayZ + 173));
+  state.approachActive = Boolean(state.airborne && readyForRecovery);
+  state.locDev = THREE.MathUtils.clamp((DEST_RUNWAY_X - state.pos.x) / Math.max(25, rwyDistZ * 0.14), -1.2, 1.2);
+  state.gsDev = THREE.MathUtils.clamp((state.pos.y - (WORLD_BOUNDS.destRunwayElevation + rwyDistZ * 0.068)) / Math.max(8, rwyDistZ * 0.045), -1.2, 1.2);
+
+  if (state.airborne && state.inThermal) state.vel.y += Math.sin(state.pos.z * 0.09 + state.fuel * 3) * 0.32 * dt * 6;
+  if (getArchDistanceInfo(state.pos).hitRock) { triggerCrash(state, 'ROCK ARCH COLLISION — THREAD THROUGH THE CENTER OPENING'); return; }
+
+  const wheelY = deckY + AIRCRAFT_DIMENSIONS.gearHeight;
+  if (state.pos.y <= wheelY) {
+    if (!state.airborne) {
+      state.pos.y = wheelY;
+      if (state.onDestRunway && state.groundSpeedKt < 24) { state.landedComplete = true; state.vel.set(0, 0, 0); }
       return;
     }
-
-    const reason = surf === 'river' ? 'RIVER IMPACT!' : 'TERRAIN / CANYON IMPACT!';
-    triggerCrash(world, reason);
-    return;
+    if (onDestDeck || onStartDeck) {
+      const sinkFpm = state.vsiFpm; const bankAbs = Math.abs(state.rollDeg);
+      if (sinkFpm > -680 && bankAbs < 24 && state.pitchDeg > -10 && state.pitchDeg < 22) {
+        state.pos.y = wheelY; state.airborne = false; state.onRunway = true; state.events.touchdownThisStep = true;
+        state.touchdownVsiFpm = Math.round(sinkFpm);
+        state.touchdownSignedOffsetM = state.pos.x - (onDestDeck ? DEST_RUNWAY_X : 0);
+        state.touchdownAlignmentM = Math.abs(state.touchdownSignedOffsetM);
+        state.touchdownThresholdM = Math.round((WORLD_BOUNDS.destRunwayZ + 220) - state.pos.z);
+        state.touchdownQuality = sinkFpm > -240 ? 'GREASER LANDING' : sinkFpm > -460 ? 'SMOOTH TOUCHDOWN' : 'FIRM LANDING';
+        if (onDestDeck && ((gatesCleared >= totalGates && readyForRecovery) || (gatesCleared === 0 && state.pos.z < -3700))) { state.onDestRunway = true; state.throttle = 0; }
+        return;
+      }
+      if (sinkFpm > -940 && bankAbs < 32 && state.hull > 40) {
+        state.hull = Math.max(0, state.hull - 38); state.pos.y = wheelY + 0.4; state.vel.y = Math.max(3.2, Math.abs(state.vel.y) * 0.35);
+        state.events.hullDamagedThisStep = true; state.events.touchdownThisStep = true; return;
+      }
+      triggerCrash(state, `HARD RUNWAY IMPACT (${Math.round(sinkFpm)} FPM) — FLARE NOSE BEFORE TOUCHDOWN`); return;
+    }
+    triggerCrash(state, terrainY < 0.4 ? 'RIVER WATER IMPACT — MAINTAIN CLEARANCE ABOVE CANYON WATER' : 'CANYON TERRAIN IMPACT — PULL UP CLEAR OF SANDSTONE WALLS'); return;
   }
-
-  const cx = canyonCenterX(p.pos.z);
-  const hw = canyonFloorHalfW(p.pos.z);
-  if (p.pos.y < 68 && Math.abs(p.pos.x - cx) > hw + 38) {
-    triggerCrash(world, 'CANYON WALL COLLISION!');
-  }
+  if (state.fuel <= 0 && state.airspeedKt < 42 && state.altitudeAglFt < 25) triggerCrash(state, 'FUEL EXHAUSTED — MANAGE CRUISE THROTTLE TO REACH THE RUNWAY');
 }
 
-function triggerCrash(world, reason) {
-  const s = world.state;
-  const p = s.plane;
-  s.crashes += 1;
-  s.crashReason = reason;
-  s.streak = 0;
-  s.score = Math.max(0, s.score - 500);
-  s.flightTime += 5.0;
-  p.hull = Math.max(0, p.hull - 34);
-  s.alertFlash = 1.0;
-  s.cameraShake = 1.0;
-  s.crashTimer = 1.55;
-  s.screen = SCREEN_CRASH;
-  s.events.crash = true;
-
-  world.spawnBurst(p.pos.x, p.pos.y, p.pos.z, '#ff6830', 34, 42);
-  world.spawnBurst(p.pos.x, p.pos.y, p.pos.z, '#3d3338', 20, 22);
-  world.showBanner(`${reason}  -500 PTS  |  -34% HULL`, '#ff5c4d', 2.0);
-}
-
-function finishMission(world) {
-  const s = world.state;
-  const p = s.plane;
-  if (s.screen === SCREEN_WIN) return;
-
-  const mission = MISSIONS[s.missionIndex];
-  const timeBonus = Math.max(0, Math.round((mission.parTime - s.flightTime) * 45));
-  const fuelBonus = Math.round(p.fuel * 12);
-  const hullBonus = Math.round(p.hull * 15);
-  const landBonus = s.landingGrade === 'GREASED TOUCHDOWN' ? 1200 : s.landingGrade === 'FIRM TOUCHDOWN' ? 800 : 450;
-
-  s.score += Math.round((timeBonus + fuelBonus + hullBonus + landBonus) * mission.scoreMult);
-  if (s.score > s.bestScore) s.bestScore = s.score;
-  s.winFlash = 1.0;
-  s.screen = SCREEN_WIN;
-  s.events.win = true;
-  world.showBanner('PATROL COMPLETE! SAFE LANDING ON SUNRISE AIRFIELD', '#5cf29c', 5.0);
-}
+function triggerCrash(state, reason) { state.hull = 0; state.crashed = true; state.crashReason = reason; state.events.crashedThisStep = true; state.vel.multiplyScalar(0.12); state.quat.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.14, 0, 0.24))); }

@@ -1,40 +1,142 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Canyon Dawn Patrol</title>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Canyon Dawn Patrol 3D</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23f4b63d'/%3E%3C/svg%3E">
+<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
 <style>
-  html, body {
-    margin: 0;
-    height: 100%;
-    overflow: hidden;
-    background: #140812;
-    font-family: ui-monospace, 'Cascadia Mono', 'Consolas', 'Courier New', monospace;
-    user-select: none;
-  }
-  #game {
-    position: fixed;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    display: block;
-    touch-action: none;
-    cursor: crosshair;
-  }
-  #status {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
+:root{--line:rgba(186,208,224,.22);--amber:#f4b63d;--gold:#ffd978;--mint:#6be6aa;--cyan:#6ee2ff;--red:#ff6359;--txt:#f1f5f8;--dim:#9bb0c0;--ui:"Segoe UI",Arial,sans-serif;--serif:Georgia,serif;--mono:Consolas,monospace}
+*{box-sizing:border-box;user-select:none}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111a21;color:var(--txt);font-family:var(--ui)}
+#viewport{position:fixed;inset:0}#flight-canvas{display:block;width:100%;height:100%;outline:none}#status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.hidden{display:none!important}
+#speed-streaks{position:fixed;inset:0;pointer-events:none;z-index:7;opacity:0;transition:opacity .25s;background:radial-gradient(ellipse at center,transparent 56%,rgba(255,244,224,.14) 100%)}
+#hud{position:fixed;inset:0;pointer-events:none;z-index:12}#fpv-marker{position:fixed;width:28px;height:28px;margin:-14px 0 0 -14px;display:none;opacity:.86}
+#yoke-indicator{position:fixed;width:16px;height:16px;margin:-8px 0 0 -8px;display:none;border-radius:50%;border:2px solid var(--amber)}
+#gate-pill{position:fixed;transform:translate(-50%,0);display:none;padding:2px 9px;background:rgba(12,20,27,.84);border:1px solid rgba(244,182,61,.6);font:700 11px var(--mono);color:var(--gold);letter-spacing:.08em;white-space:nowrap}
+#ils-box{position:fixed;top:50%;left:50%;width:116px;height:90px;margin:-45px 0 0 -58px;display:none;border:1px solid rgba(107,230,170,.34);background:rgba(12,20,27,.16)}
+#ils-loc{position:absolute;top:4px;bottom:4px;width:1.5px;background:rgba(107,230,170,.85);left:50%}#ils-gs{position:absolute;left:4px;right:4px;height:1.5px;background:rgba(107,230,170,.85);top:50%}
+.ils-lbl{position:absolute;top:-15px;left:0;right:0;text-align:center;font:700 10px var(--mono);color:var(--mint);letter-spacing:.08em}
+#top-strip{position:fixed;top:0;left:0;right:0;height:64px;z-index:26;padding:12px 24px 0;display:flex;align-items:flex-start;justify-content:space-between;pointer-events:none;background:linear-gradient(180deg,rgba(10,17,24,.72),rgba(10,17,24,0))}
+.brand-lock{display:flex;align-items:center;gap:12px}.brand-main{font-weight:800;font-size:13px;letter-spacing:.14em}.brand-sub{font:10px var(--mono);color:var(--dim);letter-spacing:.14em;margin-top:2px}
+.sector-tag{padding-left:14px;border-left:1px solid var(--line);font-size:12px;color:var(--dim);line-height:1.25}.sector-tag strong{color:var(--txt);font-size:11px;letter-spacing:.12em;display:block}
+.top-right-stat{display:flex;align-items:center;gap:10px;font:11px var(--mono);color:var(--dim);letter-spacing:.1em}.online-dot{width:6px;height:6px;border-radius:50%;background:var(--mint);box-shadow:0 0 8px var(--mint);display:inline-block}
+#sortie-card{position:fixed;top:14px;left:22px;min-width:250px;padding:10px 14px 12px;background:linear-gradient(90deg,rgba(11,19,26,.8),rgba(11,19,26,.44) 72%,rgba(11,19,26,0));border-left:2px solid var(--amber)}
+.card-kicker{font:700 10px var(--mono);color:var(--gold);letter-spacing:.14em}#mission-title{font:24px/1.12 var(--serif);margin:2px 0 3px;text-shadow:0 2px 10px rgba(0,0,0,.55)}
+#mission-obj{font:11px var(--mono);color:var(--dim);letter-spacing:.08em;margin-bottom:6px}.prog-track{width:190px;height:2px;background:rgba(255,255,255,.16);overflow:hidden}#mission-fill{width:0;height:100%;background:var(--amber);transition:width .2s}
+#hdg-wrap{position:fixed;top:6px;left:50%;transform:translateX(-50%);padding:4px 20px 8px;display:flex;flex-direction:column;align-items:center;background:radial-gradient(ellipse at top,rgba(10,17,24,.72),rgba(10,17,24,0) 76%)}
+#hdg-pill{margin-top:2px;padding:2px 12px;background:rgba(12,20,27,.88);border:1px solid var(--line);font:800 15px var(--mono);letter-spacing:.06em}#hdg-pill small{display:block;font-size:9px;color:var(--dim);text-align:center;letter-spacing:.14em;font-weight:600}
+#wind-card{position:fixed;top:14px;right:22px;text-align:right;font-family:var(--mono);padding:8px 14px 9px 30px;background:linear-gradient(270deg,rgba(11,19,26,.82),rgba(11,19,26,.46) 72%,rgba(11,19,26,0));border-right:2px solid var(--amber)}
+#wind-main{font-size:12px;font-weight:700;letter-spacing:.14em}#wind-badge{font-size:11px;color:var(--dim);letter-spacing:.1em;margin-top:2px}#wind-card.crosswind #wind-main{color:var(--gold)}#hud-clock-score{font-size:11px;color:var(--dim);margin-top:4px;letter-spacing:.08em}#flight-status{color:var(--mint);font-weight:700}
+#telem-bar{position:fixed;bottom:38px;left:22px;background:linear-gradient(180deg,rgba(12,20,27,.86),rgba(11,18,24,.92));border:1px solid var(--line);padding:9px 14px 8px;min-width:348px}
+.t-top{display:flex;justify-content:space-between;font:10px var(--mono);color:var(--dim);letter-spacing:.12em;padding-bottom:6px;border-bottom:1px solid rgba(186,208,224,.14);margin-bottom:7px}
+.t-mid{display:flex;align-items:center;gap:14px}#ah-canvas{display:block;border-radius:50%;border:1.5px solid rgba(186,208,224,.34);background:#183a54;flex-shrink:0}
+.t-cols{display:flex;gap:18px;align-items:baseline}.t-lbl{font:10px var(--mono);color:var(--dim);letter-spacing:.1em}.t-val{font:800 24px/1.05 var(--mono)}.t-val small{font-size:11px;font-weight:600;color:var(--dim);margin-left:2px}.t-sub-val{font:700 16px var(--mono)}
+.t-foot{display:flex;gap:12px;margin-top:7px;padding-top:6px;border-top:1px solid rgba(186,208,224,.14);font:10.5px var(--mono);color:var(--dim);letter-spacing:.08em}.t-foot b{color:var(--txt)}.t-foot .on{color:var(--mint)}.t-foot .warn{color:var(--red)}
+#map-card{position:fixed;bottom:38px;right:22px;display:flex;align-items:center;gap:14px}.radar-meta{text-align:right;font-family:var(--mono)}.r-kicker{font-size:10px;color:var(--dim);letter-spacing:.12em}.r-gates{font:800 20px/1.15 var(--mono);margin:2px 0}.r-gates small{font-size:12px;font-weight:400;color:var(--dim)}.r-brg{font-size:10.5px;color:var(--gold);letter-spacing:.1em}
+#map-canvas{display:block;border-radius:50%;border:1.5px solid rgba(186,208,224,.34);background:rgba(13,26,34,.84);box-shadow:0 8px 24px rgba(0,0,0,.38)}
+#hud.cockpit-mode #telem-bar,#hud.cockpit-mode #map-card,#hud.cockpit-mode #gate-pill,#hud.cockpit-mode #ils-box{display:none!important}#hud.cockpit-mode #sortie-card{top:10px;left:18px}#hud.cockpit-mode #wind-card{top:10px;right:18px}
+#key-ribbon{position:fixed;bottom:10px;left:22px;z-index:26;display:flex;gap:10px;font:10.5px var(--mono);color:var(--dim);pointer-events:auto}#hud.cockpit-mode #key-ribbon{left:auto;right:22px}
+.k-badge{display:inline-flex;align-items:center;gap:4px;cursor:pointer;padding:2px 6px 2px 3px;background:rgba(11,19,26,.78);border:1px solid var(--line)}.k-box{padding:1px 5px;background:rgba(28,42,54,.9);border:1px solid rgba(186,208,224,.28);color:var(--txt);font-weight:700;font-size:10px}.k-box.active{border-color:var(--amber);color:var(--gold)}.k-box.muted{border-color:var(--red);color:var(--red)}
+#alert-banner{position:fixed;top:92px;left:50%;transform:translateX(-50%);padding:5px 14px;background:rgba(118,22,22,.92);border:1px solid var(--red);color:#fff;font:800 12px var(--mono);letter-spacing:.1em;opacity:0;transition:opacity .18s}#alert-banner.visible{opacity:1}#alert-banner.bonus{background:rgba(14,42,38,.92);border-color:var(--mint);color:#d8ffeb}
+.vignette-panel{position:fixed;top:0;bottom:54px;left:0;width:460px;z-index:24;padding:70px 44px 18px 26px;display:flex;flex-direction:column;justify-content:space-between;background:linear-gradient(90deg,rgba(11,19,25,.94),rgba(11,19,25,.82) 68%,rgba(11,19,25,0))}
+.eyebrow{font:700 10.5px var(--mono);color:var(--gold);letter-spacing:.14em;text-transform:uppercase}.editorial-h1{font:400 38px/1.05 var(--serif);margin:5px 0 6px}.editorial-h1.crash{color:#ff968f}.panel-sub{margin:0 0 10px;font:italic 14px/1.32 var(--serif);color:#c8d6e2}
+.list-head{display:flex;justify-content:space-between;font:10px var(--mono);color:var(--dim);letter-spacing:.12em;margin-bottom:6px}#sortie-list{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
+.sortie-card{cursor:pointer;text-align:left;width:100%;padding:7px 11px;background:rgba(17,28,36,.74);border:1px solid rgba(186,208,224,.2);color:var(--txt);transition:border-color .15s,background .15s}.sortie-card:hover{border-color:var(--cyan)}.sortie-card.selected{border-color:var(--amber);background:rgba(68,52,24,.44)}
+.sortie-top{display:flex;justify-content:space-between;align-items:baseline;font-size:14px;font-weight:700}.sortie-card.selected .sortie-top{color:var(--gold)}.sortie-num-tag{font:11px var(--mono);color:var(--dim);margin-right:8px}.sortie-best{font:10px var(--mono);color:var(--mint);letter-spacing:.06em}.sortie-desc{font:10px var(--mono);color:var(--dim);letter-spacing:.08em;text-transform:uppercase;margin-top:3px;padding-left:24px}
+.brief-copy{font-size:12.5px;color:#bfcfd9;line-height:1.4;margin:0 0 10px;max-width:345px}
+.cta-btn{width:100%;max-width:345px;cursor:pointer;padding:11px 16px;border:none;background:linear-gradient(180deg,#f7c868,#e3a435);color:#181207;font:800 14px var(--ui);display:flex;justify-content:space-between;align-items:center}.cta-btn:hover{filter:brightness(1.07)}
+.sec-btn{cursor:pointer;padding:7px 12px;background:rgba(20,32,42,.88);border:1px solid var(--line);color:var(--txt);font:700 11px var(--mono);letter-spacing:.08em}.sec-btn:hover:not(:disabled){border-color:var(--gold);color:var(--gold)}.key-hint{font:10px var(--mono);color:var(--dim);letter-spacing:.08em;margin-top:8px}
+.deb-status-row{display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px solid var(--line);margin-bottom:9px;font:10.5px var(--mono);letter-spacing:.1em;max-width:356px}
+#debrief-rank{padding:3px 10px;border:1px solid var(--amber);background:rgba(58,44,16,.72);color:var(--gold);font-weight:800;font-size:14px}.deb-metrics{display:flex;gap:18px;margin-bottom:10px;flex-wrap:wrap}.deb-k{font:9.5px var(--mono);color:var(--dim);letter-spacing:.1em}.deb-v{font:700 19px var(--mono);margin-top:2px}
+.trace-label{display:flex;justify-content:space-between;font:9.5px var(--mono);color:var(--dim);letter-spacing:.1em;max-width:356px;margin-bottom:4px}#trace-canvas{display:block;background:rgba(13,22,29,.72);border:1px solid var(--line);margin-bottom:9px}
+.deb-score-row{display:flex;justify-content:space-between;align-items:baseline;max-width:356px;padding-top:7px;border-top:1px solid var(--line);margin-bottom:9px;font-family:var(--mono)}#deb-score{font-size:21px;font-weight:800;color:var(--gold)}#deb-cr-earned{font-size:14px;font-weight:700;color:var(--mint);margin-top:2px}
+#fleet-caption{position:fixed;right:26px;bottom:70px;z-index:22;text-align:right;pointer-events:none}.fleet-serif{font:28px/1.1 var(--serif)}
+#station-ledger{position:fixed;bottom:0;left:0;right:0;height:54px;z-index:25;padding:0 26px;display:flex;align-items:center;justify-content:space-between;background:rgba(10,17,24,.94);border-top:1px solid var(--line)}
+.ledger-left,.ledger-actions{display:flex;align-items:center;gap:22px}.ledger-serif{font:20px var(--serif)}.ledger-stat small{display:block;font:9px var(--mono);color:var(--dim);letter-spacing:.12em}.ledger-stat strong{font:700 16px var(--mono)}
+.ledger-btn{cursor:pointer;padding:7px 11px;background:rgba(20,32,42,.92);border:1px solid var(--line);color:var(--txt);font:700 10.5px var(--mono);letter-spacing:.08em}.ledger-btn:hover:not(:disabled){border-color:var(--amber);color:var(--gold)}.ledger-btn:disabled{opacity:.42;cursor:default}
+.ledger-go{cursor:pointer;padding:8px 15px;border:none;background:linear-gradient(180deg,#f7c868,#e3a435);color:#181207;font:800 11px var(--mono);letter-spacing:.08em}
+#pause-screen{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:420px;z-index:32;padding:22px 24px;background:rgba(12,20,28,.96);border:1px solid rgba(186,208,224,.34);box-shadow:0 20px 52px rgba(0,0,0,.65)}
+.pause-keys{font:11px/1.5 var(--mono);color:var(--dim);margin-bottom:12px}.secondary-row{display:flex;gap:8px;margin-bottom:10px;max-width:356px}
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Canyon Dawn Patrol: fly a propeller patrol plane through a red-rock canyon at sunrise and land on the desert runway"></canvas>
+<div id="viewport"><canvas id="flight-canvas" aria-label="Canyon Dawn Patrol 3D"></canvas></div>
+<div id="speed-streaks" aria-hidden="true"></div>
 <p id="status" role="status" aria-live="polite"></p>
+<header id="top-strip">
+  <div class="brand-lock">
+    <svg width="24" height="16" viewBox="0 0 24 16" aria-hidden="true"><polygon points="1,14 8,1 12,1 5,14" fill="#f4b63d"/><polygon points="10,14 17,1 21,1 14,14" fill="#f4b63d"/></svg>
+    <div><div class="brand-main">CANYON DAWN PATROL</div><div class="brand-sub">RED ROCK FLIGHT WING</div></div>
+    <div class="sector-tag"><strong>RED ROCK GORGE</strong><span>Outpost Sector / 36° 18' N</span></div>
+  </div>
+  <div class="top-right-stat"><span class="online-dot"></span><span>STATION ONLINE</span><span>|</span><span>KESTREL S-4X</span></div>
+</header>
+<div id="hud" class="hidden">
+  <svg id="fpv-marker" viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="4.5" fill="none" stroke="#6ee2ff" stroke-width="1.8"/><line x1="2" y1="14" x2="9" y2="14" stroke="#6ee2ff" stroke-width="1.8"/><line x1="19" y1="14" x2="26" y2="14" stroke="#6ee2ff" stroke-width="1.8"/><line x1="14" y1="4" x2="14" y2="9.5" stroke="#6ee2ff" stroke-width="1.8"/></svg>
+  <div id="ils-box" aria-hidden="true"><div id="ils-loc"></div><div id="ils-gs"></div><div class="ils-lbl">ILS RWY 36</div></div>
+  <div id="yoke-indicator" aria-hidden="true"></div>
+  <div id="gate-pill"><span id="gate-pill-text">GATE 01 · 320 M</span></div>
+  <div id="sortie-card"><div class="card-kicker">◆ SORTIE <span id="sortie-num">01 / 05</span> · CANYON</div><div id="mission-title">Dawn Canyon Run</div><div id="mission-obj">GATE 01 · 320 M</div><div class="prog-track"><div id="mission-fill"></div></div></div>
+  <div id="hdg-wrap"><canvas id="hdg-canvas" width="320" height="28"></canvas><div id="hdg-pill"><span id="dial-hdg">000°</span><small>HDG MAG</small></div></div>
+  <div id="wind-card"><div id="wind-main">GOLDEN HOUR</div><div id="wind-badge">WIND 02 KT / CANYON</div><div id="hud-clock-score"><span id="hud-time">00:00.0</span> · <span id="hud-score">PTS 0</span> · <span id="flight-status">• ON STATION</span></div></div>
+  <div id="alert-banner">ALERT</div>
+  <div id="telem-bar">
+    <div class="t-top"><span>● KESTREL S-4X / FLIGHT TELEMETRY</span><span id="telem-mode">HAND FLOWN · 1x</span></div>
+    <div class="t-mid"><canvas id="ah-canvas" width="56" height="56"></canvas><div class="t-cols"><div><div class="t-lbl">SPD · IAS</div><div class="t-val"><span id="dial-spd">000</span><small>KT</small></div></div><div><div class="t-lbl">ALT · MSL</div><div class="t-val"><span id="dial-alt">085</span><small>FT</small></div></div><div><div class="t-lbl">V/S</div><div id="dial-vsi" class="t-sub-val">+0</div><div class="t-lbl">FPM</div></div></div></div>
+    <div class="t-foot"><span>THR <b id="val-thr">84%</b></span><span>FUEL <b id="val-fuel">100%</b></span><span>HULL <b id="val-hull">100%</b></span><span id="gear-chip" class="on">GEAR DN</span><span id="flaps-chip">F0°</span><span id="trim-chip">LVL</span><span id="brk-chip">BRK</span></div>
+  </div>
+  <div id="map-card"><div class="radar-meta"><div class="r-kicker">CANYON RNAV</div><div id="radar-gates" class="r-gates">0 <small>/ 10 gates</small></div><div id="dial-brg" class="r-brg">RWY 36 · BRG 000°</div></div><canvas id="map-canvas" width="134" height="134"></canvas></div>
+  <div id="key-ribbon">
+    <span class="k-badge" data-key="KeyC"><span id="cam-pill" class="k-box">C</span>VIEW</span>
+    <span class="k-badge" data-key="KeyF"><span id="flaps-pill" class="k-box">F</span>FLAPS</span>
+    <span class="k-badge" data-key="KeyV"><span id="drop-pill" class="k-box">V</span>DROP</span>
+    <span class="k-badge" data-key="KeyT"><span id="trim-pill" class="k-box">T</span>LEVEL</span>
+    <span class="k-badge" data-key="KeyP"><span class="k-box">P</span>HOLD</span>
+    <span class="k-badge" data-key="KeyR"><span class="k-box">R</span>RESET</span>
+    <span class="k-badge" data-key="KeyM"><span id="audio-pill" class="k-box">M</span>AUDIO</span>
+  </div>
+</div>
+<div id="start-screen" class="vignette-panel">
+  <div>
+    <div class="eyebrow">◆ OPERATIONS DESK / NORTH APRON</div>
+    <h1 class="editorial-h1">Flight dispatch.</h1>
+    <div class="list-head"><span>SELECT A SORTIE</span><span id="dispatch-logged">00 / 05 LOGGED</span></div>
+    <div id="sortie-list">
+      <button type="button" class="sortie-card selected" data-sortie="0"><div class="sortie-top"><span><span class="sortie-num-tag">01</span>Dawn Canyon Run</span><span class="sortie-best" data-best="0">READY</span></div><div class="sortie-desc">10 canyon gates + landing · calm 2 kt</div></button>
+      <button type="button" class="sortie-card" data-sortie="1"><div class="sortie-top"><span><span class="sortie-num-tag">02</span>River Gorge Skim</span><span class="sortie-best" data-best="1">READY</span></div><div class="sortie-desc">Low river + 3D rock arch · 9 kt · 1.35x</div></button>
+      <button type="button" class="sortie-card" data-sortie="2"><div class="sortie-top"><span><span class="sortie-num-tag">03</span>Sunrise Crosswind</span><span class="sortie-best" data-best="2">READY</span></div><div class="sortie-desc">18 kt ridge gust + tight fuel · 1.60x</div></button>
+      <button type="button" class="sortie-card" data-sortie="3"><div class="sortie-top"><span><span class="sortie-num-tag">04</span>Canyon Supply Drop</span><span class="sortie-best" data-best="3">READY</span></div><div class="sortie-desc">8 gates + parachute cargo [V] · 1.45x</div></button>
+      <button type="button" class="sortie-card" data-sortie="4"><div class="sortie-top"><span><span class="sortie-num-tag">05</span>Rain on the Gorge</span><span class="sortie-best" data-best="4">READY</span></div><div class="sortie-desc">20 kt stormfront PAPI + cockpit rain · 1.80x</div></button>
+    </div>
+  </div>
+  <div>
+    <p id="sortie-brief" class="brief-copy">Thread ten illuminated gates down Red Rock Gorge, skim past the stone viaduct, and touch down cleanly on Outpost Runway 36.</p>
+    <button id="launch-btn" type="button" class="cta-btn"><span>Fly this sortie</span><span>↗</span></button>
+    <div class="key-hint">W/S PITCH · A/D ROLL · Q/E YAW · SHIFT/X THR · SPACE LAUNCH · 1-5 SORTIE</div>
+  </div>
+</div>
+<div id="fleet-caption"><div class="eyebrow" style="color:var(--dim)">FLEET REGISTER / K-04</div><div class="fleet-serif">Kestrel S-4X</div><div class="brand-sub" style="margin-top:3px">TWIN-BOOM SCOUT · 680 SHP · OUTPOST WING</div></div>
+<div id="pause-screen" class="hidden">
+  <div class="eyebrow">◆ FLIGHT HOLD</div><h2 class="editorial-h1" style="font-size:30px;margin:4px 0 8px;">Sortie Paused</h2>
+  <div class="pause-keys">W/S Pitch · A/D Roll · Q/E Rudder · Shift/X Throttle · B Brake · F Flaps · V Drop · T Auto-Level · C Cockpit · I Invert · G Yoke · M Mute · R Reset</div>
+  <div class="secondary-row"><button id="invert-btn" type="button" class="sec-btn" style="flex:1">Invert Y: OFF [I]</button><button id="yoke-btn" type="button" class="sec-btn" style="flex:1">Mouse Yoke: OFF [G]</button></div>
+  <button id="resume-btn" type="button" class="cta-btn" style="margin-bottom:8px;"><span>Resume Sortie [P]</span><span>▶</span></button>
+  <button id="pause-restart-btn" type="button" class="sec-btn" style="width:100%;">Restart Sortie [R]</button>
+</div>
+<div id="debrief-screen" class="vignette-panel hidden">
+  <div>
+    <div class="eyebrow">◆ FLIGHT RECORDER / OUTPOST 36</div><h2 id="debrief-title" class="editorial-h1">Touchdown.</h2><p id="debrief-sub" class="panel-sub">Greased landing · Dawn Canyon Run</p>
+    <div class="deb-status-row"><span id="deb-status-tag">RWY 36 · SMOOTH TOUCHDOWN</span><span id="debrief-rank">S</span></div>
+    <div class="deb-metrics"><div><div class="deb-k">SINK / FPM</div><div id="deb-vsi" class="deb-v">-120</div></div><div><div class="deb-k">OFFSET / M</div><div id="deb-offset" class="deb-v">0.8 L</div></div><div><div class="deb-k">THR / M</div><div id="deb-thr" class="deb-v">+115</div></div><div><div class="deb-k">FUEL</div><div id="deb-fuel" class="deb-v">82%</div></div><div><div class="deb-k">HULL</div><div id="deb-hull" class="deb-v">100%</div></div></div>
+    <div class="trace-label"><span>APPROACH TRACE</span><span><span style="color:var(--mint)">— FLOWN</span> · <span style="color:var(--gold)">-- 3.8° GLIDE</span></span></div>
+    <canvas id="trace-canvas" width="356" height="114"></canvas>
+    <div class="deb-score-row"><div><div class="deb-k">FLIGHT SCORE</div><div id="deb-score">3,920</div></div><div style="text-align:right;"><div id="deb-gates-info" style="font-size:10.5px;color:var(--dim);">10 / 10 GATES</div><div id="deb-cr-earned">+595 CR</div></div></div>
+  </div>
+  <div><button id="debrief-retry-btn" type="button" class="cta-btn" style="margin-bottom:8px;"><span>Fly Sortie Again [R]</span><span>↺</span></button><button id="debrief-menu-btn" type="button" class="sec-btn" style="width:345px;max-width:100%;">Return to Flight Dispatch</button></div>
+</div>
+<div id="station-ledger">
+  <div class="ledger-left"><div><div class="eyebrow" style="color:var(--dim)">GROUND SERVICES</div><div class="ledger-serif">Station ledger</div></div><div class="ledger-stat"><small>FUEL REM.</small><strong id="ledger-fuel">100%</strong></div><div class="ledger-stat"><small>AIRFRAME HULL</small><strong id="ledger-hull">100%</strong></div><div class="ledger-stat"><small>CREDITS</small><strong id="ledger-cr">680</strong></div></div>
+  <div class="ledger-actions"><button id="refuel-btn" type="button" class="ledger-btn">REFUEL / 120 CR</button><button id="repair-btn" type="button" class="ledger-btn">REPAIR / 90 CR</button><button id="presson-btn" type="button" class="ledger-go">PRESS ON →</button></div>
+</div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

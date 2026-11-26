@@ -1,5 +1,6 @@
-// Local static HTTP server for Canyon Dawn Patrol (Node 22 stdlib only).
-// Usage: node serve.ts [--port 8080]
+// Local static server for Canyon Dawn Patrol 3D (Node 22, standard library only).
+// Run `node serve.ts` (or `node --experimental-strip-types serve.ts` on Node <22.18) and open http://localhost:8080.
+
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -8,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 const gameRoot = resolve(fileURLToPath(new URL('./game', import.meta.url)));
 const args = process.argv.slice(2);
 const portFlag = args.indexOf('--port');
-const requestedPort = portFlag === -1 ? 8080 : Number(args[portFlag + 1]);
-const port = Number.isInteger(requestedPort) && requestedPort > 0 && requestedPort < 65536 ? requestedPort : 8080;
+const parsedPort = portFlag === -1 ? 8080 : Number(args[portFlag + 1]);
+const port = Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort < 65536 ? parsedPort : 8080;
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -22,7 +23,8 @@ const MIME_TYPES: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.svg': 'image/svg+xml',
   '.wav': 'audio/wav',
-  '.ogg': 'audio/ogg',
+  '.wasm': 'application/wasm',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
 createServer((req, res) => {
@@ -31,30 +33,31 @@ createServer((req, res) => {
   try {
     pathname = decodeURIComponent(url.pathname);
   } catch {
-    res.writeHead(400).end('Bad request');
+    res.writeHead(400).end('Bad Request');
     return;
   }
   if (pathname.endsWith('/')) pathname += 'index.html';
-  const filePath = resolve(join(gameRoot, normalize(pathname)));
-  if (filePath !== gameRoot && !filePath.startsWith(gameRoot + sep)) {
+  const target = resolve(join(gameRoot, normalize(pathname)));
+  if (target !== gameRoot && !target.startsWith(gameRoot + sep)) {
     res.writeHead(403).end('Forbidden');
     return;
   }
-  let size: number;
+  let size = 0;
   try {
-    const stats = statSync(filePath);
-    if (!stats.isFile()) throw new Error('not a file');
+    const stats = statSync(target);
+    if (!stats.isFile()) throw new Error('Not a file');
     size = stats.size;
   } catch {
-    res.writeHead(404).end('Not found');
+    res.writeHead(404).end('Not Found');
     return;
   }
+  const mime = MIME_TYPES[extname(target).toLowerCase()] ?? 'application/octet-stream';
   res.writeHead(200, {
-    'content-type': MIME_TYPES[extname(filePath).toLowerCase()] ?? 'application/octet-stream',
+    'content-type': mime,
     'content-length': size,
     'cache-control': 'no-store',
   });
-  createReadStream(filePath).pipe(res);
+  createReadStream(target).pipe(res);
 }).listen(port, '127.0.0.1', () => {
-  console.log(`Canyon Dawn Patrol serving at http://127.0.0.1:${port}/`);
+  console.log(`Canyon Dawn Patrol 3D serving at http://localhost:${port}`);
 });

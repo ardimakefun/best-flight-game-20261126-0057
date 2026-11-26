@@ -1,6 +1,1 @@
-[
-  { "name": "1-canyon-ring.jpg", "scene": "mid-flight-canyon-ring" },
-  { "name": "2-start.jpg", "scene": "title-start" },
-  { "name": "3-final-approach.jpg", "scene": "final-runway-approach" },
-  { "name": "4-landing-runway.jpg", "scene": "landing-complete" }
-]
+[{"name":"1-cover-canyon-ring.jpg","scene":"mid-flight-canyon-ring"},{"name":"2-start-hangar.jpg","scene":"dispatch-sortie-select"},{"name":"3-cockpit-approach.jpg","scene":"cockpit-final-approach"},{"name":"4-landing-complete.jpg","scene":"landing-complete-debrief"}]
