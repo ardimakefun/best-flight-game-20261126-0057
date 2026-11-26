@@ -1,7 +1,11 @@
 # Canyon Dawn Patrol
 
-[![make.fun](https://img.shields.io/badge/make.fun-bounty-orange)](https://make.fun/bounty/best-flight-game-20261126-0057)
+[![make.fun · best-flight-game-20261126-0057](https://make.fun/badge/best-flight-game-20261126-0057.svg)](https://make.fun/bounty/best-flight-game-20261126-0057?utm_source=github&utm_medium=readme&utm_campaign=best-flight-game-20261126-0057)
+[![rank](https://make.fun/badge/best-flight-game-20261126-0057/ardimakefun/best-flight-game-20261126-0057/rank.svg)](https://make.fun/bounty/best-flight-game-20261126-0057/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-flight-game-20261126-0057)
+[![reward](https://make.fun/badge/best-flight-game-20261126-0057/ardimakefun/best-flight-game-20261126-0057/reward.svg)](https://make.fun/bounty/best-flight-game-20261126-0057?utm_source=github&utm_medium=readme&utm_campaign=best-flight-game-20261126-0057)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Built for [make.fun](https://make.fun/r/0vh6bwht) — try the bounty yourself via my referral link.
 
 A low-poly flight game set in a red-rock canyon at sunrise. Fly the dawn
 patrol through 10 canyon rings — including one gold 3x bonus gate — then
